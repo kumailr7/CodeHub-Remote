@@ -161,12 +161,7 @@ jobs:
           # Wait for Docker to initialize
           Start-Sleep -Seconds 30
 
-      - name: Run Ollama in Docker
-        run: |
-          docker run -d --name ollama -p 11434:11434 ollama/ollama
-          docker exec ollama ollama --version
-       # Note: Model pull may take longer than workflow timeout - can continue in RDP session
-
+      ### Maintain Connection and Cleanup ###
       - name: Maintain Connection
         shell: pwsh
         run: |
