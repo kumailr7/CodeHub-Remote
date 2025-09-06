@@ -27,8 +27,7 @@ jobs:
             secret_access_key=$env:AWS_SECRET_ACCESS_KEY `
             region=$env:S3_REGION
 
-          New-Item -ItemType Directory -Path "S:\" -Force | Out-Null
-
+          # Mount S3 bucket as persistent S:\ drive
           Start-Process -FilePath "rclone" -ArgumentList @(
             "mount",
             "s3-rdp-storage:$env:S3_BUCKET_NAME",
@@ -219,5 +218,3 @@ jobs:
                 Write-Host "[$(Get-Date)] RDP Active. Your work is being saved to S:\"
                 Start-Sleep -Seconds 60
             }
-
-            
