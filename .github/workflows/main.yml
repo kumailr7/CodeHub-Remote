@@ -161,37 +161,11 @@ jobs:
           # Wait for Docker to initialize
           Start-Sleep -Seconds 30
 
-    # --- NEW: Install Ollama in WSL2 ---
-      - name: Install Ollama in Ubuntu WSL
+      - name: Run Ollama in Docker
         run: |
-          # Install Ubuntu distribution in WSL2
-          wsl --install -d Ubuntu --no-launch
-          # Wait for installation to complete
-          Start-Sleep -Seconds 30
-          
-          # Install Ollama inside Ubuntu WSL
-          wsl -d Ubuntu bash -c "curl -fsSL https://ollama.com/install.sh | sh"
-          # Wait for installation to complete
-          Start-Sleep -Seconds 30
-          # Start Ollama service in the background
-          wsl -d Ubuntu bash -c "sudo service ollama start"
-          
-          # Wait for Ollama to initialize
-          Start-Sleep -Seconds 10
-          
-          # Test Ollama installation
-          wsl -d Ubuntu bash -c "ollama --version"
-
+          docker run -d --name ollama -p 11434:11434 ollama/ollama
+          docker exec ollama ollama --version
        # Note: Model pull may take longer than workflow timeout - can continue in RDP session
-
-       # --- Gracefully unmount the drive before workflow ends ---
-      - name: Unmount S3 Drive
-        if: always() # This ensures it runs even if a previous step fails
-        run: |
-            # Try to unmount the drive gracefully
-            & "$env:TEMP\rclone\rclone.exe" unmount "S:" --daemon
-            # Forcefully delete the drive mapping if needed
-            net use S: /delete /y 2>$null | Out-Null
 
       - name: Maintain Connection
         shell: pwsh
@@ -218,3 +192,12 @@ jobs:
                 Write-Host "[$(Get-Date)] RDP Active. Your work is being saved to S:\"
                 Start-Sleep -Seconds 60
             }
+
+      # --- Gracefully unmount the drive before workflow ends ---
+      - name: Unmount S3 Drive
+        if: always() # This ensures it runs even if a previous step fails
+        run: |
+            # Try to unmount the drive gracefully
+            & "$env:TEMP\rclone\rclone.exe" unmount "S:" --daemon
+            # Forcefully delete the drive mapping if needed
+            net use S: /delete /y 2>$null | Out-Null
