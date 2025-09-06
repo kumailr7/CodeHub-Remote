@@ -1,4 +1,4 @@
-name: RDP
+name: RDP Windows Server with Persistent Storage, Tailscale, WSL2, Docker, and Ollama
 
 on:
   workflow_dispatch:
@@ -9,6 +9,47 @@ jobs:
     timeout-minutes: 3600
 
     steps:
+       # --- NEW STEP: Install and Configure Rclone ---
+      - name: Install and configure rclone
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
+          S3_REGION: ${{ secrets.S3_REGION }}
+        run: |
+          # Download and install rclone for Windows
+          Invoke-WebRequest -Uri "https://downloads.rclone.org/rclone-current-windows-amd64.zip" -OutFile "$env:TEMP\rclone.zip"
+          Expand-Archive -Path "$env:TEMP\rclone.zip" -DestinationPath "$env:TEMP\rclone-tmp" -Force
+          Get-ChildItem "$env:TEMP\rclone-tmp" -Filter "rclone-v*-windows-amd64" | Select-Object -First 1 | Copy-Item -Destination "$env:TEMP\rclone" -Recurse -Force
+          # Add rclone to the system PATH for this session
+          $env:Path += ";$env:TEMP\rclone"
+
+          # Configure rclone with the S3 credentials (non-interactive)
+          # The 's3-rdp-storage' is a name we choose for this remote connection.
+          rclone config create s3-rdp-storage s3 \
+            provider AWS \
+            access_key_id $env:AWS_ACCESS_KEY_ID \
+            secret_access_key $env:AWS_SECRET_ACCESS_KEY \
+            region $env:S3_REGION
+
+          # Create a directory to mount the S3 bucket to
+          New-Item -ItemType Directory -Path "S:\" -Force | Out-Null
+
+          # Launch rclone mount in the background as a persistent drive letter S:\
+          # '--vfs-cache-mode writes' is crucial for good performance with file writes.
+          Start-Process -FilePath "rclone" -ArgumentList @(
+            "mount",
+            "s3-rdp-storage:$env:S3_BUCKET_NAME",
+            "S:",
+            "--vfs-cache-mode", "writes",
+            "--dir-cache-time", "1000h",
+            "--volname", "S3-Persistent-Storage",
+            "--daemon"
+          ) -NoNewWindow
+
+          # Give it a moment to connect
+          Start-Sleep -Seconds 10
+          Write-Host "S3 bucket should now be mounted as S:\ drive"
       - name: Configure Core RDP Settings
         run: |
           # Enable Remote Desktop and disable Network Level Authentication (if needed)
@@ -97,26 +138,92 @@ jobs:
               exit 1
           }
           Write-Host "TCP connectivity successful!"
+      
+       # --- WSL2 & Docker Setup ---
+      - name: Install WSL2 and Linux Kernel Update
+        run: |
+          # Enable WSL feature
+          Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux -NoRestart
+          # Enable Virtual Machine Platform
+          Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -NoRestart
+          # Set WSL2 as default
+          wsl --set-default-version 2
+          # Download and install WSL2 Linux kernel update
+          $wslUpdateUrl = "https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi"
+          $wslUpdatePath = "$env:TEMP\wsl_update.msi"
+          Invoke-WebRequest -Uri $wslUpdateUrl -OutFile $wslUpdatePath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$wslUpdatePath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $wslUpdatePath -Force
+
+      - name: Install Docker Desktop
+        run: |
+          $dockerUrl = "https://desktop.docker.com/win/stable/Docker%20Desktop%20Installer.exe"
+          $installerPath = "$env:TEMP\DockerDesktopInstaller.exe"
+          
+          Invoke-WebRequest -Uri $dockerUrl -OutFile $installerPath
+          # Install Docker Desktop silently
+          Start-Process -FilePath $installerPath -ArgumentList "install --quiet" -Wait
+          Remove-Item $installerPath -Force
+          
+          # Start Docker Desktop
+          Start-Process "C:\Program Files\Docker\Docker\Docker Desktop.exe"
+          # Wait for Docker to initialize
+          Start-Sleep -Seconds 30
+
+    # --- NEW: Install Ollama in WSL2 ---
+      - name: Install Ollama in Ubuntu WSL
+        run: |
+          # Install Ubuntu distribution in WSL2
+          wsl --install -d Ubuntu --no-launch
+          # Wait for installation to complete
+          Start-Sleep -Seconds 30
+          
+          # Install Ollama inside Ubuntu WSL
+          wsl -d Ubuntu bash -c "curl -fsSL https://ollama.com/install.sh | sh"
+          # Wait for installation to complete
+          Start-Sleep -Seconds 30
+          # Start Ollama service in the background
+          wsl -d Ubuntu bash -c "sudo service ollama start"
+          
+          # Wait for Ollama to initialize
+          Start-Sleep -Seconds 10
+          
+          # Test Ollama installation
+          wsl -d Ubuntu bash -c "ollama --version"
+
+       # Note: Model pull may take longer than workflow timeout - can continue in RDP session
+
+       # --- Gracefully unmount the drive before workflow ends ---
+      - name: Unmount S3 Drive
+        if: always() # This ensures it runs even if a previous step fails
+        run: |
+            # Try to unmount the drive gracefully
+            & "$env:TEMP\rclone\rclone.exe" unmount "S:" --daemon
+            # Forcefully delete the drive mapping if needed
+            net use S: /delete /y 2>$null | Out-Null
 
       - name: Maintain Connection
         shell: pwsh
         run: |
-          Write-Host "`n=== RDP ACCESS ==="
-          Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Username: Cyberpunk"
-          Write-Host "Password: $env:RDP_CREDS"
-          Write-Host "==================`n"
+            Write-Host "`n=== RDP ACCESS ==="
+            Write-Host "Address: $env:TAILSCALE_IP"
+            Write-Host "Username: Cyberpunk"
+            Write-Host "Password: $env:RDP_CREDS"
+            Write-Host "Persistent Drive: S:\"
+            Write-Host "Docker: Available (Linux via WSL2)"
+            Write-Host "Ollama: Available in WSL2 Ubuntu"
+            Write-Host "Ollama Commands: use 'wsl' prefix"
+            Write-Host "Example: wsl -d Ubuntu ollama run phi3"
+            Write-Host "==================`n"
 
-          # Block until cancelled
-          $source = New-Object Threading.CancellationTokenSource
-          Register-EngineEvent PowerShell.Exiting -Action { 
-              Write-Host "Workflow cancelled. Exiting loop..."
-              $source.Cancel()
-          } | Out-Null
+            # Block until cancelled
+            $source = New-Object Threading.CancellationTokenSource
+            Register-EngineEvent PowerShell.Exiting -Action { 
+                Write-Host "Workflow cancelled. Exiting loop..."
+                $source.Cancel()
+            } | Out-Null
 
-          while (-not $source.Token.IsCancellationRequested) {
-              Write-Host "[$(Get-Date)] RDP Active"
-              Start-Sleep -Seconds 60
-          }
-
-          
+            while (-not $source.Token.IsCancellationRequested) {
+                Write-Host "[$(Get-Date)] RDP Active. Your work is being saved to S:\"
+                Start-Sleep -Seconds 60
+            }
