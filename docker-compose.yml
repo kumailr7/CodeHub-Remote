@@ -1,0 +1,30 @@
+version: "3.9"
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: always
+    ports:
+      - "11434:11434"  # Ollama API
+    volumes:
+      - ollama:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434  # Expose to OpenWebUI
+
+  openwebui:
+    image: ghcr.io/open-webui/open-webui:ollama
+    container_name: openwebui
+    restart: always
+    depends_on:
+      - ollama
+    ports:
+      - "3000:8080"  # OpenWebUI UI
+    volumes:
+      - openwebui:/app/backend/data
+    environment:
+      - OLLAMA_API_BASE=http://ollama:11434  # Connect to the ollama service
+
+volumes:
+  ollama:
+  openwebui:
