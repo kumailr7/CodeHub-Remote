@@ -30,7 +30,12 @@ jobs:
           sudo usermod -aG docker rdpuser
           docker --version
 
-      - name: Install rclone and Mount S3
+      - name: Prepare Local Storage Folder
+        run: |
+          sudo mkdir -p /mnt/storage
+          sudo chown $USER:$USER /mnt/storage
+
+      - name: Install rclone
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -46,10 +51,9 @@ jobs:
             secret_access_key $AWS_SECRET_ACCESS_KEY \
             region $S3_REGION
 
-          sudo mkdir -p /mnt/storage
-          nohup rclone mount s3-storage:$S3_BUCKET_NAME /mnt/storage \
-            --daemon --allow-other --vfs-cache-mode writes &
-          sleep 5
+          # Sync from S3 to local
+          rclone sync s3-storage:$S3_BUCKET_NAME /mnt/storage
+          echo "S3 data synced to /mnt/storage"
 
       - name: Install Tailscale
         run: |
