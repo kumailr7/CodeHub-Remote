@@ -1,0 +1,91 @@
+name: Ubuntu Desktop with Persistent Storage, Docker, Tailscale
+on:
+  workflow_dispatch:
+
+jobs:
+  ubuntu-desktop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3600
+
+    steps:
+      - name: Update & Install XFCE + xRDP
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            xfce4 xfce4-goodies xorg dbus-x11 x11-xserver-utils \
+            xrdp curl unzip
+
+          sudo systemctl enable xrdp
+          sudo systemctl start xrdp
+
+      - name: Create RDP User
+        run: |
+          # Generate secure random password
+          PASSWORD=$(tr -dc 'A-Za-z0-9!@#$%^&*()-_=+' < /dev/urandom | head -c20)
+          echo "RDP_PASSWORD=$PASSWORD" >> $GITHUB_ENV
+
+          sudo useradd -m -s /bin/bash rdpuser
+          echo "rdpuser:$PASSWORD" | sudo chpasswd
+          sudo usermod -aG sudo rdpuser
+
+      - name: Install Docker
+        run: |
+          curl -fsSL https://get.docker.com | sh
+          sudo usermod -aG docker rdpuser
+          docker --version
+
+      - name: Install rclone and Mount S3
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
+          S3_REGION: ${{ secrets.S3_REGION }}
+        run: |
+          curl -O https://downloads.rclone.org/rclone-current-linux-amd64.deb
+          sudo apt install -y ./rclone-current-linux-amd64.deb
+
+          rclone config create s3-storage s3 \
+            provider AWS \
+            access_key_id $AWS_ACCESS_KEY_ID \
+            secret_access_key $AWS_SECRET_ACCESS_KEY \
+            region $S3_REGION
+
+          sudo mkdir -p /mnt/storage
+          nohup rclone mount s3-storage:$S3_BUCKET_NAME /mnt/storage \
+            --daemon --allow-other --vfs-cache-mode writes &
+          sleep 5
+
+      - name: Install Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+
+      - name: Start Tailscale
+        run: |
+          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-ubuntu-${GITHUB_RUN_ID}
+          TS_IP=$(tailscale ip -4 | head -n1)
+          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
+
+      - name: Verify RDP
+        run: |
+          echo "Tailscale IP: $TAILSCALE_IP"
+          nc -zv $TAILSCALE_IP 3389 || (echo "RDP not reachable" && exit 1)
+
+      - name: Keep Alive
+        run: |
+          echo -e "\n=== RDP Access Details ==="
+          echo "Address: $TAILSCALE_IP"
+          echo "Username: rdpuser"
+          echo "Password: $RDP_PASSWORD"
+          echo "Persistent Storage: /mnt/storage"
+          echo "Docker Installed ✔️"
+          echo "===========================\n"
+
+          while true; do
+            echo "[$(date)] Ubuntu RDP session active..."
+            sleep 60
+          done
+
+      - name: Cleanup (Unmount Storage)
+        if: always()
+        run: |
+          sudo fusermount -u /mnt/storage || true
