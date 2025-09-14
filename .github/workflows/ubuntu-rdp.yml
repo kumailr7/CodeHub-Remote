@@ -10,7 +10,6 @@ jobs:
     steps:
       - name: Create SSH User
         run: |
-          # Generate secure random password
           PASSWORD=$(tr -dc 'A-Za-z0-9!@#$%^&*()-_=+' < /dev/urandom | head -c20)
           echo "SSH_PASSWORD=$PASSWORD" >> $GITHUB_ENV
 
@@ -18,7 +17,6 @@ jobs:
           echo "rdpuser:$PASSWORD" | sudo chpasswd
           sudo usermod -aG sudo rdpuser
 
-          # Enable SSH server
           sudo apt-get update
           sudo apt-get install -y openssh-server
           sudo systemctl enable ssh
@@ -35,7 +33,7 @@ jobs:
           sudo mkdir -p /mnt/storage
           sudo chown rdpuser:rdpuser /mnt/storage
 
-      - name: Install rclone and Sync from S3
+      - name: Install rclone and Configure
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -45,15 +43,24 @@ jobs:
           curl -O https://downloads.rclone.org/rclone-current-linux-amd64.deb
           sudo apt install -y ./rclone-current-linux-amd64.deb
 
-          rclone config create s3-storage s3 \
-            provider AWS \
-            access_key_id $AWS_ACCESS_KEY_ID \
-            secret_access_key $AWS_SECRET_ACCESS_KEY \
-            region $S3_REGION
+          # Write config directly for rdpuser
+          sudo -u rdpuser mkdir -p /home/rdpuser/.config/rclone
+          cat <<EOF | sudo tee /home/rdpuser/.config/rclone/rclone.conf
+[s3-storage]
+type = s3
+provider = AWS
+access_key_id = $AWS_ACCESS_KEY_ID
+secret_access_key = $AWS_SECRET_ACCESS_KEY
+region = $S3_REGION
+EOF
+          sudo chown -R rdpuser:rdpuser /home/rdpuser/.config
 
           # Sync from S3 to local
-          rclone sync s3-storage:$S3_BUCKET_NAME /mnt/storage
+          rclone --config=/home/rdpuser/.config/rclone/rclone.conf sync s3-storage:$S3_BUCKET_NAME /mnt/storage
           echo "S3 data synced to /mnt/storage"
+
+          # Add alias for easy push
+          echo 'alias s3push="rclone --config=/home/rdpuser/.config/rclone/rclone.conf sync /mnt/storage s3-storage:'$S3_BUCKET_NAME'"' | sudo tee -a /home/rdpuser/.bashrc
 
       - name: Install Tailscale
         run: |
@@ -78,6 +85,7 @@ jobs:
           echo "Password: $SSH_PASSWORD"
           echo "Persistent Storage: /mnt/storage"
           echo "Docker Installed ✔️"
+          echo "To sync data back to S3: run 's3push' inside your SSH session"
           echo "===========================\n"
 
           while true; do
@@ -91,4 +99,5 @@ jobs:
           S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
         run: |
           echo "Syncing local changes back to S3..."
-          rclone sync /mnt/storage s3-storage:$S3_BUCKET_NAME
+          rclone --config=/home/rdpuser/.config/rclone/rclone.conf sync /mnt/storage s3-storage:$S3_BUCKET_NAME
+
