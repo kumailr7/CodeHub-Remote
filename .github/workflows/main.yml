@@ -1,5 +1,4 @@
-name: RDP Windows Server with Persistent Storage, Tailscale, WSL2, Docker, and Ollama
-
+name: RDP Windows Server with Persistent Storage, Tailscale + Dropbox
 on:
   workflow_dispatch:
 
