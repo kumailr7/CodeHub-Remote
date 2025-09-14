@@ -33,9 +33,9 @@ jobs:
       - name: Prepare Local Storage Folder
         run: |
           sudo mkdir -p /mnt/storage
-          sudo chown $USER:$USER /mnt/storage
+          sudo chown rdpuser:rdpuser /mnt/storage
 
-      - name: Install rclone
+      - name: Install rclone and Sync from S3
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -59,7 +59,7 @@ jobs:
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
 
-      - name: Start Tailscale
+      - name: Start Tailscale (with SSH enabled)
         run: |
           sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --ssh --hostname=gh-ubuntu-${GITHUB_RUN_ID}
           TS_IP=$(tailscale ip -4 | head -n1)
@@ -85,7 +85,10 @@ jobs:
             sleep 60
           done
 
-      - name: Cleanup (Unmount Storage)
+      - name: Sync Back to S3 (on exit)
         if: always()
+        env:
+          S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
         run: |
-          sudo fusermount -u /mnt/storage || true
+          echo "Syncing local changes back to S3..."
+          rclone sync /mnt/storage s3-storage:$S3_BUCKET_NAME
